@@ -74,3 +74,8 @@ CTestTestfile.cmake
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Archives & Packages
+*.zip
+*.tar.gz
+*.7z
