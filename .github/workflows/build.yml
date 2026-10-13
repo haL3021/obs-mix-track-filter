@@ -38,8 +38,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path "D:/obs-src" -Force
           Set-Location "D:/obs-src"
-          if (-not (Test-Path "D:/obs-src/.git")) {
-            git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git .
+          if (-not (Test-Path "D:/obs-src/CMakeLists.txt")) {
+            git init
+            git remote add origin https://github.com/obsproject/obs-studio.git
+            git fetch --depth 1 origin 32.2.2
+            git checkout -f FETCH_HEAD
           }
           
           if (-not (Test-Path "D:/obs-src/.deps/obs-deps-2026-08-26-x64")) {
