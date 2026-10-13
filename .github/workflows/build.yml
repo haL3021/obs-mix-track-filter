@@ -28,37 +28,47 @@ jobs:
         id: cache-obs
         uses: actions/cache@v4
         with:
-          path: D:/obs-cache
-          key: obs-studio-core-32.2.2-deps2026-x64
+          path: |
+            D:/obs-src/build
+            D:/obs-src/.deps
+          key: obs-studio-core-32.2.2-deps2026-v4-x64
 
-      - name: Setup & Build Minimal OBS Core (if not cached)
-        if: steps.cache-obs.outputs.cache-hit != 'true'
+      - name: Setup OBS Source & Dependencies
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "D:/obs-src" -Force
           Set-Location "D:/obs-src"
-          git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git .
+          if (-not (Test-Path "D:/obs-src/.git")) {
+            git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git .
+          }
           
-          # Download official OBS dependencies
-          $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/2026-08-26/windows-deps-2026-08-26-x64.zip"
-          Invoke-WebRequest -Uri $depsUrl -OutFile deps.zip
-          Expand-Archive deps.zip -DestinationPath "D:/obs-src/.deps/obs-deps-2026-08-26-x64"
-          
-          # Configure minimal OBS build for libobs and obs-frontend-api
-          cmake -B D:/obs-cache -S . `
+          if (-not (Test-Path "D:/obs-src/.deps/obs-deps-2026-08-26-x64")) {
+            $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/2026-08-26/windows-deps-2026-08-26-x64.zip"
+            Invoke-WebRequest -Uri $depsUrl -OutFile deps.zip
+            Expand-Archive deps.zip -DestinationPath "D:/obs-src/.deps/obs-deps-2026-08-26-x64"
+          }
+
+      - name: Build Minimal OBS Core (if not cached)
+        if: steps.cache-obs.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Set-Location "D:/obs-src"
+          cmake -B build -S . `
             -G "Visual Studio 17 2022" -A x64 `
             -DENABLE_PLUGINS=OFF `
             -DENABLE_SCRIPTING=OFF `
             -DENABLE_BROWSER=OFF `
             -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-2026-08-26-x64;${env:Qt6_DIR}"
           
-          cmake --build D:/obs-cache --config Release --target libobs obs-frontend-api --parallel
+          cmake --build build --config Release --target libobs obs-frontend-api --parallel
 
       - name: Configure Mix Track Filter Plugin
         shell: pwsh
         run: |
           cmake -B build -G "Visual Studio 17 2022" -A x64 `
-            -DOBS_PATH="D:/obs-cache" `
+            -DOBS_PATH="D:/obs-src/build" `
+            -DCMAKE_MODULE_PATH="D:/obs-src/cmake/finders" `
+            -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-2026-08-26-x64;${env:Qt6_DIR}" `
             -DQT_DIR="${env:Qt6_DIR}"
 
       - name: Build Plugin
