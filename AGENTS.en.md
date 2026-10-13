@@ -80,14 +80,16 @@ This document outlines the core principles, coding conventions, and architectura
      - Commit changes using Conventional Commits (`feat:`, `fix:`, etc.) and push to `main`.
   2. **CI Build Verification**:
      - Verify that the GitHub Actions automated build finishes with success before proceeding to release.
-     - Generated build artifacts must include the version number in their filename (e.g., `mix-track-filter-0.3.10-windows.zip`).
+     - CI artifacts must be saved as uncompressed directories (`mix-track-filter-X.Y.Z-windows`) to prevent nested zip archives and accidental packaging errors.
   3. **Git Tagging**:
      - Create and push an annotated tag corresponding to the version (`git tag -a vX.Y.Z -m "Release vX.Y.Z"`).
   4. **Release Title & Notes Guidelines**:
      - **Release title**: Format as `vX.Y.Z - Brief summary of primary change in Japanese` (e.g., `v0.3.10 - 軽微なUIの変更`).
      - **Language**: Write release notes in **Japanese**.
      - **Scope**: Include only **user-facing changes to the deliverable / plugin itself** (omit documentation updates, CI changes, and verbose installation steps).
-  5. **Release Execution (Review & API Execution)**:
+  5. **Release Execution (Verification, Explicit Zipping, API Execution)**:
+     - Retrieve the uncompressed plugin directory from CI artifacts and verify directory structure and binaries (e.g., presence of DLL).
+     - After verification, explicitly package the zip archive locally as `mix-track-filter-X.Y.Z-windows.zip`.
      - Present the release title and release notes to the user for review.
-     - Upon explicit user confirmation, execute the GitHub Releases API directly to create the release and upload release assets.
+     - Upon explicit user confirmation, execute the GitHub Releases API directly to create the release and upload the zip asset.
 
