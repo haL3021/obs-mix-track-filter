@@ -1,6 +1,6 @@
 [ [日本語](README.md) | English ]
 
-# [ mix-track-filter ]
+# [ Mix Track Filter (OBS Plugin) ]
 
 An OBS Studio plugin that allows applying standard OBS audio filters and VST effects to **final mixed audio outputs (Tracks 1–6)**.
 

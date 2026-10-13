@@ -1,6 +1,6 @@
 [ 日本語 | [English](README.en.md) ]
 
-# [ mix-track-filter ]
+# [ Mix Track Filter (OBS Plugin) ]
 
 OBS Studioの **ミックス済み音声（トラック 1〜6）** に対してOBS標準の音声フィルターなどを適用可能にするプラグインです。
 

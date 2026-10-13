@@ -50,7 +50,7 @@ MixTrackFilterDock::~MixTrackFilterDock() {
 
 void MixTrackFilterDock::registerDock() {
     auto dock = new MixTrackFilterDock();
-    obs_frontend_add_dock_by_id("mix_track_filter_dock", "Mix Track Audio Filters", dock);
+    obs_frontend_add_dock_by_id("mix_track_filter_dock", "Mix Track Filter", dock);
     obs_frontend_add_save_callback(MixTrackFilterDock::saveLoadCallback, dock);
 }
 
