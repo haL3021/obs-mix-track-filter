@@ -80,7 +80,7 @@ This document outlines the core principles, coding conventions, and architectura
      - Commit changes using Conventional Commits (`feat:`, `fix:`, etc.) and push to `main`.
   2. **CI Build Verification**:
      - Verify that the GitHub Actions automated build finishes with success before proceeding to release.
-     - Generated build artifacts must include the version number in their filename (e.g., `mix-track-filter-windows-0.3.10.zip`).
+     - Generated build artifacts must include the version number in their filename (e.g., `mix-track-filter-0.3.10-windows.zip`).
   3. **Git Tagging**:
      - Create and push an annotated tag corresponding to the version (`git tag -a vX.Y.Z -m "Release vX.Y.Z"`).
   4. **Release Title & Notes Guidelines**:
