@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: D:/obs-cache
-          key: obs-studio-core-30.2.2-v2-x64
+          key: obs-studio-core-32.2.2-deps2026-x64
 
       - name: Setup & Build Minimal OBS Core (if not cached)
         if: steps.cache-obs.outputs.cache-hit != 'true'
@@ -37,12 +37,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path "D:/obs-src" -Force
           Set-Location "D:/obs-src"
-          git clone --depth 1 --branch 30.2.2 https://github.com/obsproject/obs-studio.git .
+          git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git .
           
           # Download official OBS dependencies
-          $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/2024-04-18/windows-deps-2024-04-18-x64.zip"
+          $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/2026-08-26/windows-deps-2026-08-26-x64.zip"
           Invoke-WebRequest -Uri $depsUrl -OutFile deps.zip
-          Expand-Archive deps.zip -DestinationPath "D:/obs-src/.deps/obs-deps-x64"
+          Expand-Archive deps.zip -DestinationPath "D:/obs-src/.deps/obs-deps-2026-08-26-x64"
           
           # Configure minimal OBS build for libobs and obs-frontend-api
           cmake -B D:/obs-cache -S . `
@@ -50,7 +50,7 @@ jobs:
             -DENABLE_PLUGINS=OFF `
             -DENABLE_SCRIPTING=OFF `
             -DENABLE_BROWSER=OFF `
-            -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-x64;${env:Qt6_DIR}"
+            -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-2026-08-26-x64;${env:Qt6_DIR}"
           
           cmake --build D:/obs-cache --config Release --target libobs obs-frontend-api
 
