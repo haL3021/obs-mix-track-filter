@@ -9,7 +9,7 @@ This document outlines the core principles, coding conventions, and architectura
 ## 1. Core Principles & Technology Stack
 
 - **Project Overview**:
-  - A C++/Qt plugin for OBS Studio that applies standard audio filters and VST effects to final mixed audio outputs (Tracks 1–6).
+  - A C++/Qt plugin for OBS Studio that applies standard audio filters and VST effects to final mixed audio outputs (Tracks 1-6).
 - **Naming Conventions**:
   - Project name: `mix-track-filter` (CMake target: `mix-track-filter-plugin`)
   - Output binary: `mix-track-filter.dll`
@@ -62,7 +62,7 @@ This document outlines the core principles, coding conventions, and architectura
   - Monitor private dummy source signals (`filter_add`, `filter_remove`, `reorder_filters`, etc.) to keep dock items in sync with native windows.
   - Delegate detailed filter adjustments to the native OBS filter properties window (`Open Filter Window...`) rather than embedding them inside the dock panel.
 - **Per-Track Bypass & Safe Persistence**:
-  - Manage Tracks 1–6 via bitmask (`trackMask`). Inactive tracks must bypass processing to minimize CPU overhead (Default: Track 1 only).
+  - Manage Tracks 1-6 via bitmask (`trackMask`). Inactive tracks must bypass processing to minimize CPU overhead (Default: Track 1 only).
   - Persist settings to `%APPDATA%/obs-studio/plugin_config/mix-track-filter/settings.json` safely.
 
 ---

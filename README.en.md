@@ -2,7 +2,7 @@
 
 # [ Mix Track Filter (OBS Plugin) ]
 
-An OBS Studio plugin that allows applying standard OBS audio filters and VST effects to **final mixed audio outputs (Tracks 1–6)**.
+An OBS Studio plugin that allows applying standard OBS audio filters and VST effects to **final mixed audio outputs (Tracks 1-6)**.
 
 Apply mastering limiters, compressors, equalizers, and maximizers to the final mixed stream or recording track after all sources have been summed.
 
@@ -46,7 +46,7 @@ After launching OBS Studio, open the dock from the menu bar via **Docks > Mix Tr
 By default, filters are applied only to **Track 1**. If you use other tracks for recording and wish to apply master processing to them as well, configure them in the settings dialog:
 
 1. Open **Tools > Mix Track Filter Settings** from the menu bar.
-2. Under **Applied Tracks**, check the desired track numbers (Tracks 1–6) and click **OK**.
+2. Under **Applied Tracks**, check the desired track numbers (Tracks 1-6) and click **OK**.
 
 > **Caution:** Applying filters across multiple tracks increases CPU overhead and may cause audio stuttering under heavy load.
 
