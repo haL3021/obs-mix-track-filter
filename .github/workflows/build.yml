@@ -12,7 +12,7 @@ on:
 jobs:
   build-windows:
     name: Build on Windows
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout Plugin Repository
@@ -52,7 +52,7 @@ jobs:
             -DENABLE_BROWSER=OFF `
             -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-2026-08-26-x64;${env:Qt6_DIR}"
           
-          cmake --build D:/obs-cache --config Release --target libobs obs-frontend-api
+          cmake --build D:/obs-cache --config Release --target libobs obs-frontend-api --parallel
 
       - name: Configure Mix Track Filter Plugin
         shell: pwsh
@@ -64,7 +64,7 @@ jobs:
       - name: Build Plugin
         shell: pwsh
         run: |
-          cmake --build build --config Release
+          cmake --build build --config Release --parallel
 
       - name: Package Plugin (mix-track-filter/bin/64bit/)
         shell: pwsh
