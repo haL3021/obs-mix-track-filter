@@ -85,7 +85,7 @@ This document outlines the core principles, coding conventions, and architectura
      - Create and push an annotated tag corresponding to the version (`git tag -a vX.Y.Z -m "Release vX.Y.Z"`).
   4. **Release Title & Notes Guidelines**:
      - **Release title**: Format as `vX.Y.Z - Brief summary of primary change in Japanese` (e.g., `v0.3.10 - 軽微なUIの変更`).
-     - **Language**: Write release notes in **Japanese**.
+     - **Language**: Provide release notes in **both Japanese and English** (e.g., Japanese section followed by English section).
      - **Scope**: Include only **user-facing changes to the deliverable / plugin itself** (omit documentation updates, CI changes, and verbose installation steps).
   5. **Release Execution (Verification, Explicit Zipping, API Execution)**:
      - Retrieve the uncompressed plugin directory from CI artifacts and verify directory structure and binaries (e.g., presence of DLL).
