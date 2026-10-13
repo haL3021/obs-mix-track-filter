@@ -1,0 +1,83 @@
+name: Build Plugin
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Plugin Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Qt 6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.6.3'
+          arch: 'win64_msvc2019_64'
+          modules: 'qtbase'
+
+      - name: Cache OBS Studio Build
+        id: cache-obs
+        uses: actions/cache@v4
+        with:
+          path: D:/obs-cache
+          key: obs-studio-core-30.2.2-x64
+
+      - name: Setup & Build Minimal OBS Core (if not cached)
+        if: steps.cache-obs.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          mkdir D:/obs-src
+          cd D:/obs-src
+          git clone --depth 1 --branch 30.2.2 https://github.com/obsproject/obs-studio.git .
+          
+          # Download official OBS dependencies
+          $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/2024-04-18/windows-deps-2024-04-18-x64.zip"
+          Invoke-WebRequest -Uri $depsUrl -OutFile deps.zip
+          Expand-Archive deps.zip -DestinationPath D:/obs-src/.deps/obs-deps-x64
+          
+          # Configure minimal libobs build
+          cmake -B D:/obs-cache -S . `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DENABLE_UI=OFF `
+            -DENABLE_PLUGINS=OFF `
+            -DENABLE_SCRIPTING=OFF `
+            -DENABLE_BROWSER=OFF `
+            -DCMAKE_PREFIX_PATH="D:/obs-src/.deps/obs-deps-x64"
+          
+          cmake --build D:/obs-cache --config Release --target libobs obs-frontend-api
+
+      - name: Configure Mix Track Filter Plugin
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DOBS_PATH="D:/obs-cache" `
+            -DQT_DIR="${env:Qt6_DIR}"
+
+      - name: Build Plugin
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
+
+      - name: Package Plugin (mix-track-filter/bin/64bit/)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "package/mix-track-filter/bin/64bit" -Force
+          Copy-Item -Path "build/Release/mix-track-filter.dll" -Destination "package/mix-track-filter/bin/64bit/"
+          Compress-Archive -Path "package/mix-track-filter" -DestinationPath "mix-track-filter-windows.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mix-track-filter-windows
+          path: mix-track-filter-windows.zip
+          if-no-files-found: error
