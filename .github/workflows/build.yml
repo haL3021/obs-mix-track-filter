@@ -84,11 +84,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path "package/mix-track-filter/bin/64bit" -Force
           Copy-Item -Path "build/Release/mix-track-filter.dll" -Destination "package/mix-track-filter/bin/64bit/"
-          Compress-Archive -Path "package/mix-track-filter" -DestinationPath "mix-track-filter-windows.zip"
+          $ver = (Get-Content "CMakeLists.txt" | Select-String 'VERSION\s+([0-9\.]+)').Matches.Groups[1].Value
+          $artifactBase = "mix-track-filter-windows-$ver"
+          $zipName = "$artifactBase.zip"
+          Compress-Archive -Path "package/mix-track-filter" -DestinationPath $zipName
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "ARTIFACT_NAME=$artifactBase" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mix-track-filter-windows
-          path: mix-track-filter-windows.zip
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
+
