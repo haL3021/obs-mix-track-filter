@@ -104,8 +104,15 @@ void SettingsDialog::loadCurrentSettings() {
     setMaskToUI(currentMask);
 }
 
+static bool s_settingsCached = false;
+static uint8_t s_cachedTrackMask = 0x01;
+static bool s_cachedAutoRehook = true;
+
 void SettingsDialog::applySettings() {
     uint8_t newMask = getMaskFromUI();
+    if (newMask == AudioProcessor::instance().getTrackMask()) {
+        return;
+    }
     AudioProcessor::instance().setTrackMask(newMask);
     saveTrackMask(newMask);
     MixTrackFilterDock::notifySettingsChanged();
@@ -120,9 +127,30 @@ void SettingsDialog::onApplyClicked() {
     applySettings();
 }
 
-static obs_data_t* openOrCreateSettingsData(char** out_path) {
+static void ensureSettingsLoaded() {
+    if (s_settingsCached) return;
+
     char* path = obs_module_config_path("settings.json");
-    if (!path) return nullptr;
+    if (!path) return;
+
+    obs_data_t* data = obs_data_create_from_json_file(path);
+    bfree(path);
+
+    if (data) {
+        if (obs_data_has_user_value(data, "track_mask")) {
+            s_cachedTrackMask = static_cast<uint8_t>(obs_data_get_int(data, "track_mask") & 0x3F);
+        }
+        if (obs_data_has_user_value(data, "auto_rehook")) {
+            s_cachedAutoRehook = obs_data_get_bool(data, "auto_rehook");
+        }
+        obs_data_release(data);
+    }
+    s_settingsCached = true;
+}
+
+static void saveSettingsToFile() {
+    char* path = obs_module_config_path("settings.json");
+    if (!path) return;
 
     QFileInfo fileInfo(QString::fromUtf8(path));
     fileInfo.dir().mkpath(".");
@@ -132,32 +160,16 @@ static obs_data_t* openOrCreateSettingsData(char** out_path) {
         data = obs_data_create();
     }
 
-    // Ensure all keys are populated with defaults if missing
-    if (!obs_data_has_user_value(data, "track_mask")) {
-        obs_data_set_int(data, "track_mask", 0x01); // Default: Track 1
-    }
-    if (!obs_data_has_user_value(data, "auto_rehook")) {
-        obs_data_set_bool(data, "auto_rehook", true); // Default: true
-    }
+    obs_data_set_int(data, "track_mask", s_cachedTrackMask);
+    obs_data_set_bool(data, "auto_rehook", s_cachedAutoRehook);
     obs_data_set_string(data, "version", MIX_TRACK_FILTER_VERSION);
-
-    if (out_path) {
-        *out_path = path;
-    } else {
-        bfree(path);
-    }
-    return data;
-}
-
-static void commitSettingsData(obs_data_t* data, char* path) {
-    if (!data || !path) return;
 
     bool ok = obs_data_save_json_safe(data, path, "tmp", "bak");
     if (ok) {
-        blog(LOG_INFO, "[MixTrackFilter] Saved settings: version=%s, track_mask=0x%02llX, auto_rehook=%s",
+        blog(LOG_INFO, "[MixTrackFilter] Saved settings: version=%s, track_mask=0x%02X, auto_rehook=%s",
              MIX_TRACK_FILTER_VERSION,
-             static_cast<long long>(obs_data_get_int(data, "track_mask")),
-             obs_data_get_bool(data, "auto_rehook") ? "true" : "false");
+             static_cast<unsigned int>(s_cachedTrackMask),
+             s_cachedAutoRehook ? "true" : "false");
     } else {
         blog(LOG_ERROR, "[MixTrackFilter] Failed to save settings to %s", path);
     }
@@ -167,39 +179,25 @@ static void commitSettingsData(obs_data_t* data, char* path) {
 }
 
 uint8_t SettingsDialog::loadTrackMask() {
-    obs_data_t* data = openOrCreateSettingsData(nullptr);
-    if (!data) return 0x01;
-
-    uint8_t mask = static_cast<uint8_t>(obs_data_get_int(data, "track_mask") & 0x3F);
-    obs_data_release(data);
-    return mask;
+    ensureSettingsLoaded();
+    return s_cachedTrackMask;
 }
 
 void SettingsDialog::saveTrackMask(uint8_t mask) {
-    char* path = nullptr;
-    obs_data_t* data = openOrCreateSettingsData(&path);
-    if (!data || !path) return;
-
-    obs_data_set_int(data, "track_mask", mask);
-    commitSettingsData(data, path);
+    ensureSettingsLoaded();
+    s_cachedTrackMask = mask & 0x3F;
+    saveSettingsToFile();
 }
 
 bool SettingsDialog::loadAutoRehook() {
-    obs_data_t* data = openOrCreateSettingsData(nullptr);
-    if (!data) return true;
-
-    bool autoRehook = obs_data_get_bool(data, "auto_rehook");
-    obs_data_release(data);
-    return autoRehook;
+    ensureSettingsLoaded();
+    return s_cachedAutoRehook;
 }
 
 void SettingsDialog::saveAutoRehook(bool autoRehook) {
-    char* path = nullptr;
-    obs_data_t* data = openOrCreateSettingsData(&path);
-    if (!data || !path) return;
-
-    obs_data_set_bool(data, "auto_rehook", autoRehook);
-    commitSettingsData(data, path);
+    ensureSettingsLoaded();
+    s_cachedAutoRehook = autoRehook;
+    saveSettingsToFile();
 }
 
 

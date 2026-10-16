@@ -3,24 +3,17 @@
 #include "settings-dialog.hpp"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QGridLayout>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QCheckBox>
-#include <QScrollArea>
 #include <QLabel>
 #include <QMenu>
 #include <QAction>
 #include <QInputDialog>
 #include <QMessageBox>
-#include <QFileDialog>
-#include <QSpinBox>
-#include <QDoubleSpinBox>
 #include <QLineEdit>
-#include <QComboBox>
-#include <QFormLayout>
 #include <QTimer>
 #include <QFrame>
 #include <QResizeEvent>
@@ -209,6 +202,7 @@ void MixTrackFilterDock::updateOrderStatus() {
     }
 
     DispatchOrderInfo info = AudioProcessor::instance().checkDispatchOrder();
+    DisplayedOrderState targetState = DisplayedOrderState::Unhooked;
 
     if (info.status == DispatchOrderStatus::Degraded) {
         if (chkAutoRehook && chkAutoRehook->isChecked()) {
@@ -228,26 +222,49 @@ void MixTrackFilterDock::updateOrderStatus() {
                     }
                     info = AudioProcessor::instance().checkDispatchOrder();
                 } else {
-                    lblOrderStatus->setText("Status: Degraded (Auto-Rehook Paused)");
-                    lblOrderStatus->setStyleSheet("color: #F44336; font-weight: bold;");
-                    updateOrderLayout();
-                    return;
+                    targetState = DisplayedOrderState::DegradedPaused;
                 }
+            } else if (autoRehookRetryCount >= MAX_AUTO_REHOOK_RETRIES) {
+                targetState = DisplayedOrderState::DegradedPaused;
             }
         }
     }
 
-    switch (info.status) {
-    case DispatchOrderStatus::Optimal:
-        autoRehookRetryCount = 0;
+    if (targetState != DisplayedOrderState::DegradedPaused) {
+        switch (info.status) {
+        case DispatchOrderStatus::Optimal:
+            autoRehookRetryCount = 0;
+            targetState = DisplayedOrderState::Optimal;
+            break;
+        case DispatchOrderStatus::Degraded:
+            targetState = DisplayedOrderState::Degraded;
+            break;
+        case DispatchOrderStatus::Unhooked:
+            targetState = DisplayedOrderState::Unhooked;
+            break;
+        }
+    }
+
+    if (targetState == lastDisplayedOrderState) {
+        return;
+    }
+    lastDisplayedOrderState = targetState;
+
+    switch (targetState) {
+    case DisplayedOrderState::Optimal:
         lblOrderStatus->setText("Status: Optimal");
         lblOrderStatus->setStyleSheet("color: #4CAF50; font-weight: bold;");
         break;
-    case DispatchOrderStatus::Degraded:
+    case DisplayedOrderState::Degraded:
         lblOrderStatus->setText("Status: Degraded");
         lblOrderStatus->setStyleSheet("color: #FF9800; font-weight: bold;");
         break;
-    case DispatchOrderStatus::Unhooked:
+    case DisplayedOrderState::DegradedPaused:
+        lblOrderStatus->setText("Status: Degraded (Auto-Rehook Paused)");
+        lblOrderStatus->setStyleSheet("color: #F44336; font-weight: bold;");
+        break;
+    case DisplayedOrderState::Unhooked:
+    case DisplayedOrderState::Uninitialized:
         lblOrderStatus->setText("Status: Unhooked");
         lblOrderStatus->setStyleSheet("color: #9E9E9E;");
         break;
@@ -296,11 +313,12 @@ void MixTrackFilterDock::refreshFilterList() {
             auto ep = static_cast<EnumParam*>(p);
             const char* name = obs_source_get_name(filter);
             bool enabled = obs_source_enabled(filter);
+            const QString filterName = QString::fromUtf8(name ? name : "");
 
-            auto item = new QListWidgetItem(QString::fromUtf8(name), ep->list);
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+            auto item = new QListWidgetItem(filterName, ep->list);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
-            item->setData(Qt::UserRole, QString::fromUtf8(name));
+            item->setData(Qt::UserRole, filterName);
 
             // Hook filter-specific signals (enable, rename)
             ep->dock->connectFilterSignals(filter);
@@ -336,9 +354,9 @@ void MixTrackFilterDock::connectSourceSignals() {
 
     signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
     if (sh) {
-        signal_handler_connect(sh, "filter_add", MixTrackFilterDock::onFilterAddSignal, this);
-        signal_handler_connect(sh, "filter_remove", MixTrackFilterDock::onFilterRemoveSignal, this);
-        signal_handler_connect(sh, "reorder_filters", MixTrackFilterDock::onReorderFiltersSignal, this);
+        signal_handler_connect(sh, "filter_add", MixTrackFilterDock::onFilterChainChangedSignal, this);
+        signal_handler_connect(sh, "filter_remove", MixTrackFilterDock::onFilterChainChangedSignal, this);
+        signal_handler_connect(sh, "reorder_filters", MixTrackFilterDock::onFilterChainChangedSignal, this);
     }
 }
 
@@ -348,9 +366,9 @@ void MixTrackFilterDock::disconnectSourceSignals() {
 
     signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
     if (sh) {
-        signal_handler_disconnect(sh, "filter_add", MixTrackFilterDock::onFilterAddSignal, this);
-        signal_handler_disconnect(sh, "filter_remove", MixTrackFilterDock::onFilterRemoveSignal, this);
-        signal_handler_disconnect(sh, "reorder_filters", MixTrackFilterDock::onReorderFiltersSignal, this);
+        signal_handler_disconnect(sh, "filter_add", MixTrackFilterDock::onFilterChainChangedSignal, this);
+        signal_handler_disconnect(sh, "filter_remove", MixTrackFilterDock::onFilterChainChangedSignal, this);
+        signal_handler_disconnect(sh, "reorder_filters", MixTrackFilterDock::onFilterChainChangedSignal, this);
     }
 }
 
@@ -367,19 +385,6 @@ void MixTrackFilterDock::connectFilterSignals(obs_source_t* filter) {
     }
 }
 
-void MixTrackFilterDock::disconnectFilterSignals(obs_source_t* filter) {
-    if (!filter) return;
-    auto it = std::find(hookedFilters.begin(), hookedFilters.end(), filter);
-    if (it == hookedFilters.end()) return;
-
-    signal_handler_t* sh = obs_source_get_signal_handler(filter);
-    if (sh) {
-        signal_handler_disconnect(sh, "enable", MixTrackFilterDock::onFilterEnableSignal, this);
-        signal_handler_disconnect(sh, "rename", MixTrackFilterDock::onFilterRenameSignal, this);
-    }
-    hookedFilters.erase(it);
-}
-
 void MixTrackFilterDock::disconnectAllFilterSignals() {
     for (obs_source_t* filter : hookedFilters) {
         signal_handler_t* sh = obs_source_get_signal_handler(filter);
@@ -391,33 +396,7 @@ void MixTrackFilterDock::disconnectAllFilterSignals() {
     hookedFilters.clear();
 }
 
-void MixTrackFilterDock::onFilterAddSignal(void* param, calldata_t* data) {
-    (void)data;
-    auto dock = static_cast<MixTrackFilterDock*>(param);
-    if (!dock || AudioProcessor::instance().isLoadingFiltersActive()) return;
-
-    QPointer<MixTrackFilterDock> safeDock(dock);
-    QMetaObject::invokeMethod(dock, [safeDock]() {
-        if (safeDock) {
-            safeDock->refreshFilterList();
-        }
-    }, Qt::QueuedConnection);
-}
-
-void MixTrackFilterDock::onFilterRemoveSignal(void* param, calldata_t* data) {
-    (void)data;
-    auto dock = static_cast<MixTrackFilterDock*>(param);
-    if (!dock || AudioProcessor::instance().isLoadingFiltersActive()) return;
-
-    QPointer<MixTrackFilterDock> safeDock(dock);
-    QMetaObject::invokeMethod(dock, [safeDock]() {
-        if (safeDock) {
-            safeDock->refreshFilterList();
-        }
-    }, Qt::QueuedConnection);
-}
-
-void MixTrackFilterDock::onReorderFiltersSignal(void* param, calldata_t* data) {
+void MixTrackFilterDock::onFilterChainChangedSignal(void* param, calldata_t* data) {
     (void)data;
     auto dock = static_cast<MixTrackFilterDock*>(param);
     if (!dock || AudioProcessor::instance().isLoadingFiltersActive()) return;
@@ -551,50 +530,35 @@ void MixTrackFilterDock::onAddFilterClicked() {
     obs_source_release(newFilter);
 }
 
-void MixTrackFilterDock::onRemoveFilterClicked() {
-    QListWidgetItem* item = filterList->currentItem();
-    if (!item) return;
-
+obs_source_t* MixTrackFilterDock::getFilterForItem(QListWidgetItem* item) const {
+    if (!item) return nullptr;
     obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
-    if (!dummySource) return;
+    if (!dummySource) return nullptr;
 
-    std::string name = item->data(Qt::UserRole).toString().toUtf8().constData();
-    obs_source_t* filter = obs_source_get_filter_by_name(dummySource, name.c_str());
+    QByteArray utf8Name = item->data(Qt::UserRole).toString().toUtf8();
+    return obs_source_get_filter_by_name(dummySource, utf8Name.constData());
+}
+
+void MixTrackFilterDock::onRemoveFilterClicked() {
+    obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        // Removing from dummySource triggers filter_remove signal
-        obs_source_filter_remove(dummySource, filter);
+        obs_source_filter_remove(AudioProcessor::instance().getDummySource(), filter);
         obs_source_release(filter);
     }
 }
 
 void MixTrackFilterDock::onMoveUpClicked() {
-    QListWidgetItem* item = filterList->currentItem();
-    if (!item) return;
-
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
-    if (!dummySource) return;
-
-    std::string name = item->data(Qt::UserRole).toString().toUtf8().constData();
-    obs_source_t* filter = obs_source_get_filter_by_name(dummySource, name.c_str());
+    obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        // Setting order triggers reorder_filters signal
-        obs_source_filter_set_order(dummySource, filter, OBS_ORDER_MOVE_UP);
+        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(), filter, OBS_ORDER_MOVE_UP);
         obs_source_release(filter);
     }
 }
 
 void MixTrackFilterDock::onMoveDownClicked() {
-    QListWidgetItem* item = filterList->currentItem();
-    if (!item) return;
-
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
-    if (!dummySource) return;
-
-    std::string name = item->data(Qt::UserRole).toString().toUtf8().constData();
-    obs_source_t* filter = obs_source_get_filter_by_name(dummySource, name.c_str());
+    obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        // Setting order triggers reorder_filters signal
-        obs_source_filter_set_order(dummySource, filter, OBS_ORDER_MOVE_DOWN);
+        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(), filter, OBS_ORDER_MOVE_DOWN);
         obs_source_release(filter);
     }
 }
@@ -602,11 +566,7 @@ void MixTrackFilterDock::onMoveDownClicked() {
 void MixTrackFilterDock::onFilterItemChanged(QListWidgetItem* item) {
     if (!item || isInternalUpdating) return;
 
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
-    if (!dummySource) return;
-
-    std::string name = item->data(Qt::UserRole).toString().toUtf8().constData();
-    obs_source_t* filter = obs_source_get_filter_by_name(dummySource, name.c_str());
+    obs_source_t* filter = getFilterForItem(item);
     if (filter) {
         bool enabled = (item->checkState() == Qt::Checked);
         if (obs_source_enabled(filter) != enabled) {

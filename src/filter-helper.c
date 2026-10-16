@@ -52,28 +52,50 @@ struct audio_output_internal {
 #endif
 
 
-int check_audio_dispatch_order_c(audio_t *audio, size_t mix_idx, audio_output_callback_t callback, void *param)
+int check_audio_dispatch_order_mask_c(audio_t *audio, uint8_t track_mask,
+                                      audio_output_callback_t callback, void *param,
+                                      int *out_degraded_track)
 {
-    if (!audio || mix_idx >= MAX_AUDIO_MIXES) {
+    if (out_degraded_track) {
+        *out_degraded_track = -1;
+    }
+    if (!audio || track_mask == 0) {
         return -1;
     }
 
     struct audio_output_internal *ao = (struct audio_output_internal *)audio;
     pthread_mutex_lock(&ao->input_mutex);
 
-    struct audio_mix_internal *mix = &ao->mixes[mix_idx];
-    size_t count = mix->inputs.num;
-    int order = -1;
+    bool all_optimal = true;
 
-    for (size_t i = 0; i < count; i++) {
-        struct audio_input_internal *input = &mix->inputs.array[i];
-        if (input->callback == callback && input->param == param) {
-            order = (int)(count - 1 - i);
-            break;
+    for (size_t mix_idx = 0; mix_idx < 6 && mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
+        if (!(track_mask & (1 << mix_idx))) {
+            continue;
+        }
+
+        struct audio_mix_internal *mix = &ao->mixes[mix_idx];
+        size_t count = mix->inputs.num;
+        int order = -1;
+
+        // Iterate backwards from the tail since optimal position is at count - 1
+        for (size_t i = count; i-- > 0;) {
+            struct audio_input_internal *input = &mix->inputs.array[i];
+            if (input->callback == callback && input->param == param) {
+                order = (int)(count - 1 - i);
+                break;
+            }
+        }
+
+        if (order != 0) {
+            all_optimal = false;
+            if (out_degraded_track && *out_degraded_track == -1) {
+                *out_degraded_track = (int)(mix_idx + 1);
+            }
+            break; // First degraded track found is sufficient
         }
     }
 
     pthread_mutex_unlock(&ao->input_mutex);
-    return order;
+    return all_optimal ? 0 : 1;
 }
 

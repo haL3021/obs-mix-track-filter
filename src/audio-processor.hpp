@@ -17,6 +17,18 @@
  */
 struct FilterChainSnapshot {
     std::vector<obs_source_t*> filters;
+
+    FilterChainSnapshot() = default;
+    ~FilterChainSnapshot() {
+        for (obs_source_t* filter : filters) {
+            if (filter) {
+                obs_source_release(filter);
+            }
+        }
+    }
+
+    FilterChainSnapshot(const FilterChainSnapshot&) = delete;
+    FilterChainSnapshot& operator=(const FilterChainSnapshot&) = delete;
 };
 
 enum class DispatchOrderStatus {
@@ -115,7 +127,8 @@ private:
     std::mutex retiredMutex;
     std::vector<std::unique_ptr<FilterChainSnapshot>> retiredSnapshots;
 
-    // Cross-fade smoothing state for bypass toggling (audio thread only)
+    // Cross-fade smoothing state and backup buffer for bypass toggling (audio thread only)
     float fadeGains[6]{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    float rawBackup[MAX_AV_PLANES][AUDIO_OUTPUT_FRAMES]{};
     static constexpr float FADE_RAMP_SAMPLES = 1024.0f;
 };

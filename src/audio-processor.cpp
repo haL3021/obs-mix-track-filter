@@ -5,7 +5,9 @@
 #include <util/platform.h>
 
 extern "C" struct obs_audio_data *process_filter_audio_c(obs_source_t *filter, struct obs_audio_data *audio);
-extern "C" int check_audio_dispatch_order_c(audio_t *audio, size_t mix_idx, audio_output_callback_t callback, void *param);
+extern "C" int check_audio_dispatch_order_mask_c(audio_t *audio, uint8_t track_mask,
+                                                 audio_output_callback_t callback, void *param,
+                                                 int *out_degraded_track);
 
 
 // Identifier for our internal private dummy source type
@@ -88,23 +90,11 @@ void AudioProcessor::terminate() {
 
     // Clear snapshot
     FilterChainSnapshot* oldSnap = activeSnapshot.exchange(nullptr, std::memory_order_acq_rel);
-    if (oldSnap) {
-        for (obs_source_t* filter : oldSnap->filters) {
-            obs_source_release(filter);
-        }
-        delete oldSnap;
-    }
+    delete oldSnap;
 
     // Clear retired snapshots
     {
         std::lock_guard<std::mutex> lock(retiredMutex);
-        for (auto& snap : retiredSnapshots) {
-            if (snap) {
-                for (obs_source_t* filter : snap->filters) {
-                    obs_source_release(filter);
-                }
-            }
-        }
         retiredSnapshots.clear();
     }
 
@@ -248,7 +238,7 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         return;
     }
 
-    bool isBypassed = processor->isBypassed();
+    bool isBypassed = processor->bypassAll.load(std::memory_order_relaxed);
     float& currentGain = processor->fadeGains[mix_idx];
 
     // Fast path: fully bypassed and fade-out completed -> zero CPU overhead
@@ -262,15 +252,32 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         return; // No filters to apply
     }
 
+    // Check if at least one filter is enabled before touching any audio buffers
+    bool hasEnabledFilter = false;
+    for (obs_source_t* filter : snapshot->filters) {
+        if (filter && obs_source_enabled(filter)) {
+            hasEnabledFilter = true;
+            break;
+        }
+    }
+    if (!hasEnabledFilter) {
+        const float frameStep = static_cast<float>(data->frames) / FADE_RAMP_SAMPLES;
+        if (isBypassed) {
+            currentGain = std::max(0.0f, currentGain - frameStep);
+        } else if (currentGain < 1.0f) {
+            currentGain = std::min(1.0f, currentGain + frameStep);
+        }
+        return;
+    }
+
     // Determine if we need to cross-fade (smoothing) between raw and filtered audio
     bool isTransitioning = isBypassed || (currentGain < 1.0f);
 
     // Save pre-filter raw audio only when transitioning across bypass states
-    float rawBackup[MAX_AV_PLANES][AUDIO_OUTPUT_FRAMES];
     if (isTransitioning) {
         for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
             if (data->data[plane]) {
-                std::memcpy(rawBackup[plane], data->data[plane], data->frames * sizeof(float));
+                std::memcpy(processor->rawBackup[plane], data->data[plane], data->frames * sizeof(float));
             }
         }
     }
@@ -304,7 +311,8 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
     // Synchronize both the standard clamped buffer (mix->buffer) and
     // the unclamped buffer (mix->buffer_unclamped) with the filtered audio.
     constexpr size_t UNCLAMPED_OFFSET_FLOATS = MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES;
-    const float gainStep = 1.0f / FADE_RAMP_SAMPLES;
+    const float signedStep = isBypassed ? (-1.0f / FADE_RAMP_SAMPLES) : (1.0f / FADE_RAMP_SAMPLES);
+    float nextGain = currentGain;
 
     for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
         if (!data->data[plane]) continue;
@@ -318,22 +326,14 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         if (isTransitioning) {
             float gain = currentGain;
             for (size_t s = 0; s < data->frames; ++s) {
-                if (isBypassed) {
-                    gain = std::max(0.0f, gain - gainStep);
-                } else {
-                    gain = std::min(1.0f, gain + gainStep);
-                }
-                float rawSample = rawBackup[plane][s];
+                gain = std::clamp(gain + signedStep, 0.0f, 1.0f);
+                float rawSample = processor->rawBackup[plane][s];
                 float filteredSample = filteredBuf[s];
                 float mixedSample = rawSample * (1.0f - gain) + filteredSample * gain;
                 normalBuf[s] = mixedSample;
                 unclampedBuf[s] = mixedSample;
             }
-
-            // Update gain state after finishing all audio channels
-            if (plane == MAX_AV_PLANES - 1 || !data->data[plane + 1]) {
-                currentGain = gain;
-            }
+            nextGain = gain;
         } else {
             // Steady state: fast memcpy directly
             if (filteredBuf != normalBuf) {
@@ -341,6 +341,10 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
             }
             std::memcpy(unclampedBuf, normalBuf, data->frames * sizeof(float));
         }
+    }
+
+    if (isTransitioning) {
+        currentGain = nextGain;
     }
 }
 
@@ -367,10 +371,6 @@ void AudioProcessor::updateSnapshot() {
 
         // Keep retired history bounded (e.g. keep last 4, destroy older ones)
         while (retiredSnapshots.size() > 4) {
-            auto& oldest = retiredSnapshots.front();
-            for (obs_source_t* filter : oldest->filters) {
-                obs_source_release(filter);
-            }
             retiredSnapshots.erase(retiredSnapshots.begin());
         }
     }
@@ -481,28 +481,16 @@ DispatchOrderInfo AudioProcessor::checkDispatchOrder() {
         return info;
     }
 
-    bool allOptimal = true;
-    for (size_t mix = 0; mix < 6; ++mix) {
-        if (mask & (1 << mix)) {
-            int order = check_audio_dispatch_order_c(audio, mix, AudioProcessor::onAudioData, this);
-            if (order == 0) {
-                // Optimal on this track (at tail of array, executes first in LIFO loop)
-            } else if (order > 0) {
-                allOptimal = false;
-                if (info.degradedTrack == -1) {
-                    info.degradedTrack = static_cast<int>(mix + 1);
-                }
-            } else {
-                // Not found or error
-                allOptimal = false;
-                if (info.degradedTrack == -1) {
-                    info.degradedTrack = static_cast<int>(mix + 1);
-                }
-            }
-        }
+    int degradedTrack = -1;
+    int res = check_audio_dispatch_order_mask_c(audio, mask, AudioProcessor::onAudioData, this, &degradedTrack);
+    if (res == 0) {
+        info.status = DispatchOrderStatus::Optimal;
+    } else if (res > 0) {
+        info.status = DispatchOrderStatus::Degraded;
+        info.degradedTrack = degradedTrack;
+    } else {
+        info.status = DispatchOrderStatus::Unhooked;
     }
-
-    info.status = allOptimal ? DispatchOrderStatus::Optimal : DispatchOrderStatus::Degraded;
     return info;
 }
 

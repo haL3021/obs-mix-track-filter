@@ -9,13 +9,11 @@
 #include <chrono>
 
 class QVBoxLayout;
-class QHBoxLayout;
 class QGridLayout;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
 class QCheckBox;
-class QScrollArea;
 class QLabel;
 class QTimer;
 class QResizeEvent;
@@ -28,7 +26,6 @@ class QResizeEvent;
  * - List view of filters with individual enable/disable checkboxes.
  * - Add (+) popup enumerating available audio filters in OBS Studio.
  * - Remove (-), Move Up (▲), and Move Down (▼) controls.
- * - Dynamic Properties View for inspecting and tweaking selected filter settings.
  * - Native OBS filter manager launcher button.
  * - Persistence callback integration with obs_frontend_add_save_callback.
  * - Bidirectional synchronization with OBS native filter dialog via OBS source signals.
@@ -77,13 +74,11 @@ private:
     void connectSourceSignals();
     void disconnectSourceSignals();
     void connectFilterSignals(obs_source_t* filter);
-    void disconnectFilterSignals(obs_source_t* filter);
     void disconnectAllFilterSignals();
+    obs_source_t* getFilterForItem(QListWidgetItem* item) const;
 
     // OBS source signal callbacks
-    static void onFilterAddSignal(void* param, calldata_t* data);
-    static void onFilterRemoveSignal(void* param, calldata_t* data);
-    static void onReorderFiltersSignal(void* param, calldata_t* data);
+    static void onFilterChainChangedSignal(void* param, calldata_t* data);
     static void onFilterEnableSignal(void* param, calldata_t* data);
     static void onFilterRenameSignal(void* param, calldata_t* data);
 
@@ -112,6 +107,14 @@ private:
     static constexpr int MAX_AUTO_REHOOK_RETRIES = 3;
     static constexpr int AUTO_REHOOK_COOLDOWN_MS = 3000;
 
+    enum class DisplayedOrderState {
+        Uninitialized,
+        Optimal,
+        Degraded,
+        DegradedPaused,
+        Unhooked
+    };
+    DisplayedOrderState lastDisplayedOrderState = DisplayedOrderState::Uninitialized;
 
     // Synchronization state
     std::vector<obs_source_t*> hookedFilters;
