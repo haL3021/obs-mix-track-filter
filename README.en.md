@@ -37,7 +37,7 @@ C:\ProgramData\obs-studio\plugins\mix-track-filter\bin\64bit\
 After launching OBS Studio, open the dock from the menu bar via **Docks > Mix Track Filter**.
 
 - **Add & Edit Filters:** Click `+ Add` in the dock to add filters, or click `Open Filter Window...` to open the native filter properties and adjust parameters.
-- **Bypass All:** Check `Bypass All Filters` to temporarily mute all processing and compare with the dry/unfiltered signal.
+- **Bypass Track:** Check `Bypass Track Filters` to temporarily mute processing for the selected track and compare with the dry/unfiltered signal.
 - **Auto-Rehook:** Automatically ensures filters remain at the head of the audio output chain during streaming and recording starts. (Keep enabled under normal operation).
 
 > **Note:** If the Status is anything other than **Optimal**, the filter might not be applied properly in the output pipeline. Click `Rehook Order` to manually re-apply the filter hook.

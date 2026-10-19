@@ -104,10 +104,10 @@ void MixTrackFilterDock::setupUI() {
     mainLayout->addWidget(filterList, 1);
 
     // Bypass check
-    chkBypassAll = new QCheckBox("Bypass All Filters", this);
-    chkBypassAll->setChecked(AudioProcessor::instance().isBypassed());
-    connect(chkBypassAll, &QCheckBox::toggled, this, &MixTrackFilterDock::onBypassAllToggled);
-    mainLayout->addWidget(chkBypassAll);
+    chkBypassTrack = new QCheckBox("Bypass Track Filters", this);
+    chkBypassTrack->setChecked(AudioProcessor::instance().isTrackBypassed(currentTrackIdx));
+    connect(chkBypassTrack, &QCheckBox::toggled, this, &MixTrackFilterDock::onBypassTrackToggled);
+    mainLayout->addWidget(chkBypassTrack);
 
     // Button Grid: 2 rows x 2 columns
     // Column 0: Add, Remove; Column 1: Up, Down
@@ -322,6 +322,12 @@ void MixTrackFilterDock::onTrackSelectionChanged(int index) {
 
     currentTrackIdx = static_cast<size_t>(index);
 
+    if (chkBypassTrack) {
+        chkBypassTrack->blockSignals(true);
+        chkBypassTrack->setChecked(AudioProcessor::instance().isTrackBypassed(currentTrackIdx));
+        chkBypassTrack->blockSignals(false);
+    }
+
     connectSourceSignals();
     refreshFilterList();
 }
@@ -366,8 +372,8 @@ void MixTrackFilterDock::onCopyFiltersClicked() {
     menu.exec(btnCopyFilters->mapToGlobal(QPoint(0, btnCopyFilters->height())));
 }
 
-void MixTrackFilterDock::onBypassAllToggled(bool checked) {
-    AudioProcessor::instance().setBypassAll(checked);
+void MixTrackFilterDock::onBypassTrackToggled(bool checked) {
+    AudioProcessor::instance().setTrackBypass(currentTrackIdx, checked);
 }
 
 void MixTrackFilterDock::onOpenNativeFilterDialogClicked() {

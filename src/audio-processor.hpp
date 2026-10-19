@@ -82,9 +82,24 @@ public:
     // Signal callback for dummy source filter changes (native dialog or dock)
     static void onFiltersStructureChanged(void* param, calldata_t* data);
 
-    // Mix track bypass
-    void setBypassAll(bool bypass) { bypassAll.store(bypass, std::memory_order_release); }
-    bool isBypassed() const { return bypassAll.load(std::memory_order_acquire); }
+    // Mix track bypass (per-track bitmask: bits 0..5 = tracks 1..6)
+    void setTrackBypass(size_t trackIdx, bool bypass) {
+        if (trackIdx >= MAX_AUDIO_TRACKS) return;
+        uint8_t current = bypassMask.load(std::memory_order_relaxed);
+        uint8_t desired;
+        do {
+            desired = bypass ? static_cast<uint8_t>(current | (1 << trackIdx))
+                             : static_cast<uint8_t>(current & ~(1 << trackIdx));
+        } while (!bypassMask.compare_exchange_weak(current, desired,
+                                                   std::memory_order_release,
+                                                   std::memory_order_relaxed));
+    }
+    bool isTrackBypassed(size_t trackIdx) const {
+        if (trackIdx >= MAX_AUDIO_TRACKS) return false;
+        return (bypassMask.load(std::memory_order_acquire) & (1 << trackIdx)) != 0;
+    }
+    uint8_t getBypassMask() const { return bypassMask.load(std::memory_order_acquire); }
+    void setBypassMask(uint8_t mask) { bypassMask.store(mask & 0x3F, std::memory_order_release); }
 
     // Mix track selection mask (bits 0..5 = tracks 1..6)
     void setTrackMask(uint8_t mask);
@@ -129,7 +144,7 @@ private:
     std::mutex hookMutex;
     std::atomic<bool> frontendLoaded{false};
     std::atomic<bool> isHooked{false};
-    std::atomic<bool> bypassAll{false};
+    std::atomic<uint8_t> bypassMask{0x00};
     std::atomic<uint8_t> trackMask{0x01};
     uint8_t hookedMixes{0};
 

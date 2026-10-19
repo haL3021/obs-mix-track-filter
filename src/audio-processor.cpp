@@ -250,7 +250,7 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         return;
     }
 
-    bool isBypassed = processor->bypassAll.load(std::memory_order_relaxed);
+    bool isBypassed = (processor->bypassMask.load(std::memory_order_relaxed) & (1 << mix_idx)) != 0;
     float& currentGain = processor->fadeGains[mix_idx];
 
     // Fast path: fully bypassed and fade-out completed -> zero CPU overhead

@@ -59,7 +59,7 @@ private slots:
     void onMoveUpClicked();
     void onMoveDownClicked();
     void onFilterItemChanged(QListWidgetItem* item);
-    void onBypassAllToggled(bool checked);
+    void onBypassTrackToggled(bool checked);
     void onOpenNativeFilterDialogClicked();
     void onAutoRehookToggled(bool checked);
     void onRehookOrderClicked();
@@ -93,7 +93,7 @@ private:
     size_t currentTrackIdx = 0;
     QComboBox* cmbTrackSelect = nullptr;
     QPushButton* btnCopyFilters = nullptr;
-    QCheckBox* chkBypassAll = nullptr;
+    QCheckBox* chkBypassTrack = nullptr;
     QListWidget* filterList = nullptr;
     QPushButton* btnAdd = nullptr;
     QPushButton* btnRemove = nullptr;
