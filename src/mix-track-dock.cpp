@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <QFrame>
 #include <QResizeEvent>
+#include <QComboBox>
 #include <algorithm>
 
 
@@ -62,6 +63,7 @@ void MixTrackFilterDock::saveLoadCallback(obs_data_t* save_data, bool saving, vo
 void MixTrackFilterDock::notifySettingsChanged() {
     if (s_activeDock) {
         s_activeDock->updateOrderStatus();
+        s_activeDock->updateTrackSelectorLabels();
     }
 }
 
@@ -70,8 +72,30 @@ void MixTrackFilterDock::setupUI() {
     mainLayout->setContentsMargins(6, 6, 6, 6);
     mainLayout->setSpacing(6);
 
-    // Filter List Header
-    mainLayout->addWidget(new QLabel("Loaded Filter Chain:", this));
+    // Track selector and copy controls (replaces "Loaded Filter Chain:" label)
+    auto* trackHeaderLayout = new QHBoxLayout();
+    trackHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    trackHeaderLayout->setSpacing(4);
+
+    auto* lblFilterTrack = new QLabel("Filter:", this);
+    cmbTrackSelect = new QComboBox(this);
+    for (int i = 0; i < 6; ++i) {
+        cmbTrackSelect->addItem(QString("Track %1").arg(i + 1));
+    }
+    btnCopyFilters = new QPushButton("Copy...", this);
+    btnCopyFilters->setToolTip("Copy filter chain from this track to other tracks");
+
+    trackHeaderLayout->addWidget(lblFilterTrack);
+    trackHeaderLayout->addWidget(cmbTrackSelect, 1);
+    trackHeaderLayout->addWidget(btnCopyFilters);
+    mainLayout->addLayout(trackHeaderLayout);
+
+    connect(cmbTrackSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MixTrackFilterDock::onTrackSelectionChanged);
+    connect(btnCopyFilters, &QPushButton::clicked,
+            this, &MixTrackFilterDock::onCopyFiltersClicked);
+
+    updateTrackSelectorLabels();
 
     // Filter List Widget
     filterList = new QListWidget(this);
@@ -274,14 +298,81 @@ void MixTrackFilterDock::updateOrderStatus() {
 
 
 
+void MixTrackFilterDock::updateTrackSelectorLabels() {
+    if (!cmbTrackSelect) return;
+
+    uint8_t mask = AudioProcessor::instance().getTrackMask();
+    cmbTrackSelect->blockSignals(true);
+    for (int i = 0; i < 6; ++i) {
+        bool isActive = (mask & (1 << i)) != 0;
+        QString text = isActive ? QString("Track %1").arg(i + 1)
+                                : QString("Track %1 (Off)").arg(i + 1);
+        cmbTrackSelect->setItemText(i, text);
+    }
+    cmbTrackSelect->blockSignals(false);
+}
+
+void MixTrackFilterDock::onTrackSelectionChanged(int index) {
+    if (index < 0 || index >= 6 || static_cast<size_t>(index) == currentTrackIdx) {
+        return;
+    }
+
+    disconnectSourceSignals();
+    disconnectAllFilterSignals();
+
+    currentTrackIdx = static_cast<size_t>(index);
+
+    connectSourceSignals();
+    refreshFilterList();
+}
+
+void MixTrackFilterDock::onCopyFiltersClicked() {
+    if (!btnCopyFilters) return;
+
+    uint8_t mask = AudioProcessor::instance().getTrackMask();
+    QMenu menu(this);
+
+    // Copy to all active tracks
+    bool hasOtherActive = false;
+    for (size_t i = 0; i < AudioProcessor::MAX_AUDIO_TRACKS; ++i) {
+        if (i != currentTrackIdx && (mask & (1 << i))) {
+            hasOtherActive = true;
+            break;
+        }
+    }
+
+    QAction* actAll = menu.addAction("Copy to All Applied Tracks");
+    actAll->setEnabled(hasOtherActive);
+    connect(actAll, &QAction::triggered, this, [this]() {
+        AudioProcessor::instance().copyFiltersToAppliedTracks(currentTrackIdx);
+    });
+
+    menu.addSeparator();
+
+    // Copy to individual tracks
+    for (size_t i = 0; i < AudioProcessor::MAX_AUDIO_TRACKS; ++i) {
+        bool isActive = (mask & (1 << i)) != 0;
+        QString label = isActive ? QString("Copy to Track %1").arg(i + 1)
+                                 : QString("Copy to Track %1 (Off)").arg(i + 1);
+
+        QAction* actTrack = menu.addAction(label);
+        actTrack->setEnabled(i != currentTrackIdx);
+
+        connect(actTrack, &QAction::triggered, this, [this, i]() {
+            AudioProcessor::instance().copyFilters(currentTrackIdx, i);
+        });
+    }
+
+    menu.exec(btnCopyFilters->mapToGlobal(QPoint(0, btnCopyFilters->height())));
+}
+
 void MixTrackFilterDock::onBypassAllToggled(bool checked) {
     AudioProcessor::instance().setBypassAll(checked);
 }
 
 void MixTrackFilterDock::onOpenNativeFilterDialogClicked() {
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (dummySource) {
-
         obs_frontend_open_source_filters(dummySource);
     }
 }
@@ -299,7 +390,7 @@ void MixTrackFilterDock::refreshFilterList() {
     filterList->blockSignals(true);
     filterList->clear();
 
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (dummySource) {
         // Disconnect previous filter hooks before reconnecting updated ones
         disconnectAllFilterSignals();
@@ -349,7 +440,7 @@ void MixTrackFilterDock::refreshFilterList() {
 }
 
 void MixTrackFilterDock::connectSourceSignals() {
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (!dummySource) return;
 
     signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
@@ -361,7 +452,7 @@ void MixTrackFilterDock::connectSourceSignals() {
 }
 
 void MixTrackFilterDock::disconnectSourceSignals() {
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (!dummySource) return;
 
     signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
@@ -476,7 +567,7 @@ void MixTrackFilterDock::onFilterRenamed(const QString& prevName, const QString&
 }
 
 void MixTrackFilterDock::onAddFilterClicked() {
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (!dummySource) return;
 
     QMenu menu(this);
@@ -532,7 +623,7 @@ void MixTrackFilterDock::onAddFilterClicked() {
 
 obs_source_t* MixTrackFilterDock::getFilterForItem(QListWidgetItem* item) const {
     if (!item) return nullptr;
-    obs_source_t* dummySource = AudioProcessor::instance().getDummySource();
+    obs_source_t* dummySource = AudioProcessor::instance().getDummySource(currentTrackIdx);
     if (!dummySource) return nullptr;
 
     QByteArray utf8Name = item->data(Qt::UserRole).toString().toUtf8();
@@ -542,7 +633,7 @@ obs_source_t* MixTrackFilterDock::getFilterForItem(QListWidgetItem* item) const 
 void MixTrackFilterDock::onRemoveFilterClicked() {
     obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        obs_source_filter_remove(AudioProcessor::instance().getDummySource(), filter);
+        obs_source_filter_remove(AudioProcessor::instance().getDummySource(currentTrackIdx), filter);
         obs_source_release(filter);
     }
 }
@@ -550,7 +641,7 @@ void MixTrackFilterDock::onRemoveFilterClicked() {
 void MixTrackFilterDock::onMoveUpClicked() {
     obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(), filter, OBS_ORDER_MOVE_UP);
+        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(currentTrackIdx), filter, OBS_ORDER_MOVE_UP);
         obs_source_release(filter);
     }
 }
@@ -558,7 +649,7 @@ void MixTrackFilterDock::onMoveUpClicked() {
 void MixTrackFilterDock::onMoveDownClicked() {
     obs_source_t* filter = getFilterForItem(filterList->currentItem());
     if (filter) {
-        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(), filter, OBS_ORDER_MOVE_DOWN);
+        obs_source_filter_set_order(AudioProcessor::instance().getDummySource(currentTrackIdx), filter, OBS_ORDER_MOVE_DOWN);
         obs_source_release(filter);
     }
 }

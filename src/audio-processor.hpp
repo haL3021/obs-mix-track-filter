@@ -63,14 +63,21 @@ public:
     void syncTrackMask();
     bool isAudioHooked() const { return isHooked.load(std::memory_order_acquire); }
 
+    static constexpr size_t MAX_AUDIO_TRACKS = 6;
+
     // Real-time audio processing callback (invoked by OBS audio subsystem)
     static void onAudioData(void* param, size_t mix_idx, struct audio_data* data);
 
-    // Dummy source access
-    obs_source_t* getDummySource() const { return dummySource; }
+    // Dummy source access (trackIdx: 0..5 corresponding to Track 1..6)
+    obs_source_t* getDummySource(size_t trackIdx = 0) const;
 
     // Filter chain snapshot management (UI thread updates snapshot for audio thread)
-    void updateSnapshot();
+    void updateSnapshot(size_t trackIdx);
+    void updateAllSnapshots();
+
+    // Filter chain duplication helpers (UI thread only)
+    void copyFilters(size_t srcTrackIdx, size_t dstTrackIdx);
+    void copyFiltersToAppliedTracks(size_t srcTrackIdx);
 
     // Signal callback for dummy source filter changes (native dialog or dock)
     static void onFiltersStructureChanged(void* param, calldata_t* data);
@@ -106,8 +113,14 @@ private:
 
     void registerDummySourceType();
 
-    // Hidden source container for filters
-    obs_source_t* dummySource = nullptr;
+    struct TrackSignalContext {
+        AudioProcessor* processor = nullptr;
+        size_t trackIdx = 0;
+    };
+
+    // Hidden source containers for filters (one per track)
+    obs_source_t* dummySources[MAX_AUDIO_TRACKS]{};
+    TrackSignalContext signalContexts[MAX_AUDIO_TRACKS]{};
 
     // Batch filter loading guard
     std::atomic<bool> isLoadingFilters{false};
@@ -120,8 +133,8 @@ private:
     std::atomic<uint8_t> trackMask{0x01};
     uint8_t hookedMixes{0};
 
-    // Lock-free RCU-style snapshot for the audio thread
-    std::atomic<FilterChainSnapshot*> activeSnapshot{nullptr};
+    // Lock-free RCU-style snapshots for the audio thread (one per track)
+    std::atomic<FilterChainSnapshot*> activeSnapshots[MAX_AUDIO_TRACKS]{};
 
     // Storage for retired snapshots to safely delete outside audio thread
     std::mutex retiredMutex;

@@ -54,24 +54,35 @@ void AudioProcessor::registerDummySourceType() {
     registered = true;
 }
 
+obs_source_t* AudioProcessor::getDummySource(size_t trackIdx) const {
+    if (trackIdx >= MAX_AUDIO_TRACKS) {
+        return nullptr;
+    }
+    return dummySources[trackIdx];
+}
+
 void AudioProcessor::initialize() {
-    if (dummySource) return;
+    if (dummySources[0]) return;
 
     registerDummySourceType();
 
-    // Create private dummy source to hold mix track filters natively
-    dummySource = obs_source_create_private(DUMMY_SOURCE_ID, "Mix Track Filter Chain Container", nullptr);
+    for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+        char name[64];
+        snprintf(name, sizeof(name), "Mix Track %zu", i + 1);
 
-    // Initial empty snapshot
-    auto emptySnap = new FilterChainSnapshot();
-    activeSnapshot.store(emptySnap, std::memory_order_release);
+        dummySources[i] = obs_source_create_private(DUMMY_SOURCE_ID, name, nullptr);
 
-    // Connect signals for automatic snapshot updates whenever filters change natively or in dock
-    signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
-    if (sh) {
-        signal_handler_connect(sh, "filter_add", AudioProcessor::onFiltersStructureChanged, this);
-        signal_handler_connect(sh, "filter_remove", AudioProcessor::onFiltersStructureChanged, this);
-        signal_handler_connect(sh, "reorder_filters", AudioProcessor::onFiltersStructureChanged, this);
+        signalContexts[i] = {this, i};
+
+        auto emptySnap = new FilterChainSnapshot();
+        activeSnapshots[i].store(emptySnap, std::memory_order_release);
+
+        signal_handler_t* sh = obs_source_get_signal_handler(dummySources[i]);
+        if (sh) {
+            signal_handler_connect(sh, "filter_add", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+            signal_handler_connect(sh, "filter_remove", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+            signal_handler_connect(sh, "reorder_filters", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+        }
     }
 }
 
@@ -79,28 +90,29 @@ void AudioProcessor::terminate() {
     frontendLoaded.store(false, std::memory_order_release);
     unhookAudio();
 
-    if (dummySource) {
-        signal_handler_t* sh = obs_source_get_signal_handler(dummySource);
-        if (sh) {
-            signal_handler_disconnect(sh, "filter_add", AudioProcessor::onFiltersStructureChanged, this);
-            signal_handler_disconnect(sh, "filter_remove", AudioProcessor::onFiltersStructureChanged, this);
-            signal_handler_disconnect(sh, "reorder_filters", AudioProcessor::onFiltersStructureChanged, this);
+    for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+        if (dummySources[i]) {
+            signal_handler_t* sh = obs_source_get_signal_handler(dummySources[i]);
+            if (sh) {
+                signal_handler_disconnect(sh, "filter_add", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+                signal_handler_disconnect(sh, "filter_remove", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+                signal_handler_disconnect(sh, "reorder_filters", AudioProcessor::onFiltersStructureChanged, &signalContexts[i]);
+            }
+        }
+
+        FilterChainSnapshot* oldSnap = activeSnapshots[i].exchange(nullptr, std::memory_order_acq_rel);
+        delete oldSnap;
+
+        if (dummySources[i]) {
+            obs_source_release(dummySources[i]);
+            dummySources[i] = nullptr;
         }
     }
-
-    // Clear snapshot
-    FilterChainSnapshot* oldSnap = activeSnapshot.exchange(nullptr, std::memory_order_acq_rel);
-    delete oldSnap;
 
     // Clear retired snapshots
     {
         std::lock_guard<std::mutex> lock(retiredMutex);
         retiredSnapshots.clear();
-    }
-
-    if (dummySource) {
-        obs_source_release(dummySource);
-        dummySource = nullptr;
     }
 }
 
@@ -247,7 +259,7 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
     }
 
     // Fetch the current active filter chain snapshot: lock-free atomic pointer read
-    FilterChainSnapshot* snapshot = processor->activeSnapshot.load(std::memory_order_acquire);
+    FilterChainSnapshot* snapshot = processor->activeSnapshots[mix_idx].load(std::memory_order_acquire);
     if (!snapshot || snapshot->filters.empty()) {
         return; // No filters to apply
     }
@@ -348,48 +360,28 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
     }
 }
 
-void AudioProcessor::updateSnapshot() {
-    if (!dummySource) return;
+static void clearSourceFilters(obs_source_t* source) {
+    if (!source) return;
 
-    auto newSnapshot = std::make_unique<FilterChainSnapshot>();
+    std::vector<obs_source_t*> existingFilters;
+    obs_source_enum_filters(source, [](obs_source_t*, obs_source_t* filter, void* param) {
+        auto list = static_cast<std::vector<obs_source_t*>*>(param);
+        obs_source_get_ref(filter);
+        list->push_back(filter);
+    }, &existingFilters);
 
-    // Enumerate existing filters on dummy source
-    obs_source_enum_filters(dummySource, [](obs_source_t*, obs_source_t* filter, void* param) {
-        auto snap = static_cast<FilterChainSnapshot*>(param);
-        obs_source_get_ref(filter); // Increment refcount for snapshot ownership
-        snap->filters.push_back(filter);
-    }, newSnapshot.get());
-
-    // Atomically swap the new snapshot into place for the audio thread
-    FilterChainSnapshot* rawNew = newSnapshot.release();
-    FilterChainSnapshot* oldSnapshot = activeSnapshot.exchange(rawNew, std::memory_order_acq_rel);
-
-    // Safely store old snapshot in retired list to defer destruction
-    if (oldSnapshot) {
-        std::lock_guard<std::mutex> lock(retiredMutex);
-        retiredSnapshots.emplace_back(oldSnapshot);
-
-        // Keep retired history bounded (e.g. keep last 4, destroy older ones)
-        while (retiredSnapshots.size() > 4) {
-            retiredSnapshots.erase(retiredSnapshots.begin());
-        }
+    for (obs_source_t* filter : existingFilters) {
+        obs_source_filter_remove(source, filter);
+        obs_source_release(filter);
     }
 }
 
-void AudioProcessor::onFiltersStructureChanged(void* param, calldata_t* data) {
-    (void)data;
-    auto processor = static_cast<AudioProcessor*>(param);
-    if (processor && !processor->isLoadingFilters.load(std::memory_order_acquire)) {
-        processor->updateSnapshot();
-    }
-}
-
-void AudioProcessor::saveFilters(obs_data_t* save_data) {
-    if (!dummySource || !save_data) return;
+static obs_data_array_t* serializeSourceFilters(obs_source_t* source) {
+    if (!source) return nullptr;
 
     obs_data_array_t* filterArray = obs_data_array_create();
 
-    obs_source_enum_filters(dummySource, [](obs_source_t*, obs_source_t* filter, void* param) {
+    obs_source_enum_filters(source, [](obs_source_t*, obs_source_t* filter, void* param) {
         auto array = static_cast<obs_data_array_t*>(param);
 
         obs_source_save(filter);
@@ -411,33 +403,16 @@ void AudioProcessor::saveFilters(obs_data_t* save_data) {
         obs_data_release(item);
     }, filterArray);
 
-    obs_data_set_array(save_data, "mix_track_filter_chain", filterArray);
-    obs_data_array_release(filterArray);
-    blog(LOG_INFO, "[MixTrackFilter] Saved mix track filter configuration.");
+    return filterArray;
 }
 
-void AudioProcessor::loadFilters(obs_data_t* save_data) {
-    if (!dummySource || !save_data) return;
+static size_t deserializeSourceFilters(obs_source_t* source, obs_data_array_t* filterArray) {
+    if (!source) return 0;
 
-    obs_data_array_t* filterArray = obs_data_get_array(save_data, "mix_track_filter_chain");
-    if (!filterArray) return;
+    clearSourceFilters(source);
 
-    isLoadingFilters.store(true, std::memory_order_release);
+    if (!filterArray) return 0;
 
-    // Remove existing filters from dummy source
-    std::vector<obs_source_t*> existingFilters;
-    obs_source_enum_filters(dummySource, [](obs_source_t*, obs_source_t* filter, void* param) {
-        auto list = static_cast<std::vector<obs_source_t*>*>(param);
-        obs_source_get_ref(filter);
-        list->push_back(filter);
-    }, &existingFilters);
-
-    for (obs_source_t* filter : existingFilters) {
-        obs_source_filter_remove(dummySource, filter);
-        obs_source_release(filter);
-    }
-
-    // Reconstruct filter chain from saved array
     size_t count = obs_data_array_count(filterArray);
     for (size_t i = 0; i < count; ++i) {
         obs_data_t* item = obs_data_array_item(filterArray, i);
@@ -449,7 +424,7 @@ void AudioProcessor::loadFilters(obs_data_t* save_data) {
         obs_source_t* filter = obs_source_create_private(id, name, settings);
         if (filter) {
             obs_source_set_enabled(filter, enabled);
-            obs_source_filter_add(dummySource, filter);
+            obs_source_filter_add(source, filter);
             obs_source_load(filter);
             obs_source_release(filter);
         }
@@ -457,14 +432,164 @@ void AudioProcessor::loadFilters(obs_data_t* save_data) {
         obs_data_release(settings);
         obs_data_release(item);
     }
+    return count;
+}
 
-    obs_data_array_release(filterArray);
+void AudioProcessor::updateSnapshot(size_t trackIdx) {
+    if (trackIdx >= MAX_AUDIO_TRACKS || !dummySources[trackIdx]) return;
+
+    auto newSnapshot = std::make_unique<FilterChainSnapshot>();
+
+    // Enumerate existing filters on track's dummy source
+    obs_source_enum_filters(dummySources[trackIdx], [](obs_source_t*, obs_source_t* filter, void* param) {
+        auto snap = static_cast<FilterChainSnapshot*>(param);
+        obs_source_get_ref(filter); // Increment refcount for snapshot ownership
+        snap->filters.push_back(filter);
+    }, newSnapshot.get());
+
+    // Atomically swap the new snapshot into place for the audio thread
+    FilterChainSnapshot* rawNew = newSnapshot.release();
+    FilterChainSnapshot* oldSnapshot = activeSnapshots[trackIdx].exchange(rawNew, std::memory_order_acq_rel);
+
+    // Safely store old snapshot in retired list to defer destruction
+    if (oldSnapshot) {
+        std::lock_guard<std::mutex> lock(retiredMutex);
+        retiredSnapshots.emplace_back(oldSnapshot);
+
+        // Keep retired history bounded (keep last 24 = 4 * MAX_AUDIO_TRACKS, destroy older ones)
+        while (retiredSnapshots.size() > (4 * MAX_AUDIO_TRACKS)) {
+            retiredSnapshots.erase(retiredSnapshots.begin());
+        }
+    }
+}
+
+void AudioProcessor::updateAllSnapshots() {
+    for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+        updateSnapshot(i);
+    }
+}
+
+void AudioProcessor::onFiltersStructureChanged(void* param, calldata_t* data) {
+    (void)data;
+    auto ctx = static_cast<TrackSignalContext*>(param);
+    if (ctx && ctx->processor && !ctx->processor->isLoadingFilters.load(std::memory_order_acquire)) {
+        ctx->processor->updateSnapshot(ctx->trackIdx);
+    }
+}
+
+void AudioProcessor::copyFilters(size_t srcTrackIdx, size_t dstTrackIdx) {
+    if (srcTrackIdx >= MAX_AUDIO_TRACKS || dstTrackIdx >= MAX_AUDIO_TRACKS || srcTrackIdx == dstTrackIdx) {
+        return;
+    }
+    if (!dummySources[srcTrackIdx] || !dummySources[dstTrackIdx]) {
+        return;
+    }
+
+    isLoadingFilters.store(true, std::memory_order_release);
+
+    obs_data_array_t* serialized = serializeSourceFilters(dummySources[srcTrackIdx]);
+    if (serialized) {
+        deserializeSourceFilters(dummySources[dstTrackIdx], serialized);
+        obs_data_array_release(serialized);
+    }
 
     isLoadingFilters.store(false, std::memory_order_release);
 
-    // Update audio thread snapshot
-    updateSnapshot();
-    blog(LOG_INFO, "[MixTrackFilter] Restored %zu mix track filters.", count);
+    updateSnapshot(dstTrackIdx);
+    blog(LOG_INFO, "[MixTrackFilter] Copied filters from track %zu to track %zu.", srcTrackIdx + 1, dstTrackIdx + 1);
+}
+
+void AudioProcessor::copyFiltersToAppliedTracks(size_t srcTrackIdx) {
+    if (srcTrackIdx >= MAX_AUDIO_TRACKS || !dummySources[srcTrackIdx]) {
+        return;
+    }
+
+    uint8_t mask = trackMask.load(std::memory_order_acquire);
+    isLoadingFilters.store(true, std::memory_order_release);
+
+    obs_data_array_t* serialized = serializeSourceFilters(dummySources[srcTrackIdx]);
+    if (serialized) {
+        for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+            if (i != srcTrackIdx && (mask & (1 << i)) && dummySources[i]) {
+                deserializeSourceFilters(dummySources[i], serialized);
+                updateSnapshot(i);
+                blog(LOG_INFO, "[MixTrackFilter] Copied filters from track %zu to track %zu.", srcTrackIdx + 1, i + 1);
+            }
+        }
+        obs_data_array_release(serialized);
+    }
+
+    isLoadingFilters.store(false, std::memory_order_release);
+}
+
+void AudioProcessor::saveFilters(obs_data_t* save_data) {
+    if (!save_data) return;
+
+    obs_data_array_t* chainsArray = obs_data_array_create();
+
+    for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+        obs_data_t* trackObj = obs_data_create();
+        obs_data_array_t* filterArray = serializeSourceFilters(dummySources[i]);
+
+        obs_data_set_int(trackObj, "track", static_cast<long long>(i + 1));
+        obs_data_set_array(trackObj, "filters", filterArray);
+
+        obs_data_array_push_back(chainsArray, trackObj);
+
+        obs_data_array_release(filterArray);
+        obs_data_release(trackObj);
+    }
+
+    obs_data_set_array(save_data, "mix_track_filter_chains", chainsArray);
+    obs_data_array_release(chainsArray);
+    blog(LOG_INFO, "[MixTrackFilter] Saved mix track filter configuration for all tracks.");
+}
+
+void AudioProcessor::loadFilters(obs_data_t* save_data) {
+    if (!save_data) return;
+
+    obs_data_array_t* chainsArray = obs_data_get_array(save_data, "mix_track_filter_chains");
+    obs_data_array_t* legacyArray = obs_data_get_array(save_data, "mix_track_filter_chain");
+
+    if (!chainsArray && !legacyArray) return;
+
+    isLoadingFilters.store(true, std::memory_order_release);
+
+    if (chainsArray) {
+        size_t count = obs_data_array_count(chainsArray);
+        for (size_t i = 0; i < count && i < MAX_AUDIO_TRACKS; ++i) {
+            obs_data_t* trackObj = obs_data_array_item(chainsArray, i);
+            obs_data_array_t* filterArray = obs_data_get_array(trackObj, "filters");
+
+            deserializeSourceFilters(dummySources[i], filterArray);
+
+            obs_data_array_release(filterArray);
+            obs_data_release(trackObj);
+        }
+        obs_data_array_release(chainsArray);
+        blog(LOG_INFO, "[MixTrackFilter] Restored mix track filters from modern multi-track format.");
+    } else if (legacyArray) {
+        // Migration from legacy single filter chain:
+        // Restore onto active tracks (or Track 1 if all tracks are currently unselected)
+        uint8_t mask = trackMask.load(std::memory_order_acquire);
+        if (mask == 0) {
+            mask = 0x01; // Data loss prevention fallback to Track 1
+        }
+
+        for (size_t i = 0; i < MAX_AUDIO_TRACKS; ++i) {
+            if (mask & (1 << i)) {
+                deserializeSourceFilters(dummySources[i], legacyArray);
+                blog(LOG_INFO, "[MixTrackFilter] Migrated legacy filter chain to active track %zu.", i + 1);
+            } else {
+                clearSourceFilters(dummySources[i]);
+            }
+        }
+        obs_data_array_release(legacyArray);
+    }
+
+    isLoadingFilters.store(false, std::memory_order_release);
+
+    updateAllSnapshots();
 }
 
 DispatchOrderInfo AudioProcessor::checkDispatchOrder() {

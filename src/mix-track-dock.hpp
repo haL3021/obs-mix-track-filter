@@ -17,6 +17,7 @@ class QCheckBox;
 class QLabel;
 class QTimer;
 class QResizeEvent;
+class QComboBox;
 
 
 
@@ -48,8 +49,11 @@ public:
 
 public slots:
     void refreshFilterList();
+    void updateTrackSelectorLabels();
 
 private slots:
+    void onTrackSelectionChanged(int index);
+    void onCopyFiltersClicked();
     void onAddFilterClicked();
     void onRemoveFilterClicked();
     void onMoveUpClicked();
@@ -86,6 +90,9 @@ private:
     QVBoxLayout* mainLayout = nullptr;
 
     // Controls
+    size_t currentTrackIdx = 0;
+    QComboBox* cmbTrackSelect = nullptr;
+    QPushButton* btnCopyFilters = nullptr;
     QCheckBox* chkBypassAll = nullptr;
     QListWidget* filterList = nullptr;
     QPushButton* btnAdd = nullptr;
