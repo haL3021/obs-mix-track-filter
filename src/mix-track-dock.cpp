@@ -347,7 +347,7 @@ void MixTrackFilterDock::onCopyFiltersClicked() {
         }
     }
 
-    QAction* actAll = menu.addAction("Copy to All Applied Tracks");
+    QAction* actAll = menu.addAction("All Applied Tracks");
     actAll->setEnabled(hasOtherActive);
     connect(actAll, &QAction::triggered, this, [this]() {
         AudioProcessor::instance().copyFiltersToAppliedTracks(currentTrackIdx);
@@ -358,8 +358,8 @@ void MixTrackFilterDock::onCopyFiltersClicked() {
     // Copy to individual tracks
     for (size_t i = 0; i < AudioProcessor::MAX_AUDIO_TRACKS; ++i) {
         bool isActive = (mask & (1 << i)) != 0;
-        QString label = isActive ? QString("Copy to Track %1").arg(i + 1)
-                                 : QString("Copy to Track %1 (Off)").arg(i + 1);
+        QString label = isActive ? QString("Track %1").arg(i + 1)
+                                 : QString("Track %1 (Off)").arg(i + 1);
 
         QAction* actTrack = menu.addAction(label);
         actTrack->setEnabled(i != currentTrackIdx);
