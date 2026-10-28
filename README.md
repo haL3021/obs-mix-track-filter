@@ -24,7 +24,7 @@ OBS Studioの **ミックス済み音声（トラック 1〜6）** に対してO
 1. `mix-track-filter.dll` を以下のフォルダーに配置します。（フォルダーが無い場合は作成してください）
 
 ```text
-C:\ProgramData\obs-studio\plugins\mix-track-filter\bin\64bit\
+C:\ProgramData\obs-studio\plugins\mix-track-filter\
 ```
 
 2. OBS Studioを起動します。

@@ -24,7 +24,7 @@ Each individual audio source can be mixed conservatively to prevent distortion, 
 1. Place `mix-track-filter.dll` in the following directory (create the directory if it does not exist):
 
 ```text
-C:\ProgramData\obs-studio\plugins\mix-track-filter\bin\64bit\
+C:\ProgramData\obs-studio\plugins\mix-track-filter\
 ```
 
 2. Start OBS Studio.

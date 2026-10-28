@@ -87,11 +87,11 @@ jobs:
         run: |
           cmake --build build --config Release --parallel
 
-      - name: Package Plugin (mix-track-filter/bin/64bit/)
+      - name: Package Plugin (mix-track-filter/)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path "package/mix-track-filter/bin/64bit" -Force
-          Copy-Item -Path "build/Release/mix-track-filter.dll" -Destination "package/mix-track-filter/bin/64bit/"
+          New-Item -ItemType Directory -Path "package/mix-track-filter" -Force
+          Copy-Item -Path "build/Release/mix-track-filter.dll" -Destination "package/mix-track-filter/"
           $ver = (Get-Content "CMakeLists.txt" | Select-String 'project\([^)]*VERSION\s+([0-9\.]+)').Matches.Groups[1].Value
           "ARTIFACT_NAME=mix-track-filter-$ver-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
