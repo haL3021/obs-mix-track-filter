@@ -264,6 +264,12 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         return; // No filters to apply
     }
 
+    const size_t frames = std::min<size_t>(static_cast<size_t>(data->frames),
+                                           static_cast<size_t>(AUDIO_OUTPUT_FRAMES));
+    if (frames == 0) {
+        return;
+    }
+
     // Check if at least one filter is enabled before touching any audio buffers
     bool hasEnabledFilter = false;
     for (obs_source_t* filter : snapshot->filters) {
@@ -273,7 +279,7 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         }
     }
     if (!hasEnabledFilter) {
-        const float frameStep = static_cast<float>(data->frames) / FADE_RAMP_SAMPLES;
+        const float frameStep = static_cast<float>(frames) / FADE_RAMP_SAMPLES;
         if (isBypassed) {
             currentGain = std::max(0.0f, currentGain - frameStep);
         } else if (currentGain < 1.0f) {
@@ -282,20 +288,43 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         return;
     }
 
+    // Query the actual active plane count (lock-free field read in libobs).
+    // libobs do_audio_output() only populates data->data[0 .. planes - 1] and leaves
+    // remaining entries uninitialized on the stack, so never iterate past planes.
+    audio_t* obsAudio = obs_get_audio();
+    if (!obsAudio) {
+        return;
+    }
+    const size_t planes = std::min<size_t>(audio_output_get_planes(obsAudio),
+                                           static_cast<size_t>(MAX_AV_PLANES));
+    if (planes == 0) {
+        return;
+    }
+
     // Determine if we need to cross-fade (smoothing) between raw and filtered audio
     bool isTransitioning = isBypassed || (currentGain < 1.0f);
 
     // Save pre-filter raw audio only when transitioning across bypass states
     if (isTransitioning) {
-        for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
+        for (size_t plane = 0; plane < planes; ++plane) {
             if (data->data[plane]) {
-                std::memcpy(processor->rawBackup[plane], data->data[plane], data->frames * sizeof(float));
+                std::memcpy(processor->rawBackup[plane], data->data[plane], frames * sizeof(float));
             }
         }
     }
 
-    // Cast raw audio_data to obs_audio_data (identical memory layout: data planes, frames, timestamp)
-    auto audio = reinterpret_cast<struct obs_audio_data*>(data);
+    // Build a clean obs_audio_data with unused planes explicitly NULL-initialized,
+    // matching obs_source_output_audio() behavior so downstream filters (e.g. VST)
+    // never dereference uninitialized stack pointers.
+    struct obs_audio_data filterInput = {};
+    for (size_t plane = 0; plane < planes; ++plane) {
+        filterInput.data[plane] = data->data[plane];
+    }
+    filterInput.frames = static_cast<uint32_t>(frames);
+    filterInput.timestamp = data->timestamp;
+
+    constexpr size_t UNCLAMPED_OFFSET_FLOATS = MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES;
+    struct obs_audio_data* audio = &filterInput;
 
     // Sequentially process each active filter in the chain
     for (obs_source_t* filter : snapshot->filters) {
@@ -306,13 +335,12 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
 
             // If a filter silenced or dropped the audio, clear remaining buffers and terminate chain
             if (!audio) {
-                constexpr size_t UNCLAMPED_OFFSET_FLOATS = MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES;
-                for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
+                for (size_t plane = 0; plane < planes; ++plane) {
                     if (data->data[plane]) {
                         float* normalBuf = reinterpret_cast<float*>(data->data[plane]);
                         float* unclampedBuf = normalBuf + UNCLAMPED_OFFSET_FLOATS;
-                        std::memset(normalBuf, 0, data->frames * sizeof(float));
-                        std::memset(unclampedBuf, 0, data->frames * sizeof(float));
+                        std::memset(normalBuf, 0, frames * sizeof(float));
+                        std::memset(unclampedBuf, 0, frames * sizeof(float));
                     }
                 }
                 break;
@@ -322,25 +350,27 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
 
     // Synchronize both the standard clamped buffer (mix->buffer) and
     // the unclamped buffer (mix->buffer_unclamped) with the filtered audio.
-    constexpr size_t UNCLAMPED_OFFSET_FLOATS = MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES;
+    const size_t filteredFrames = audio
+                                      ? std::min<size_t>(static_cast<size_t>(audio->frames), frames)
+                                      : frames;
     const float signedStep = isBypassed ? (-1.0f / FADE_RAMP_SAMPLES) : (1.0f / FADE_RAMP_SAMPLES);
     float nextGain = currentGain;
 
-    for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
+    for (size_t plane = 0; plane < planes; ++plane) {
         if (!data->data[plane]) continue;
 
         float* normalBuf = reinterpret_cast<float*>(data->data[plane]);
         float* unclampedBuf = normalBuf + UNCLAMPED_OFFSET_FLOATS;
-        const float* filteredBuf = (audio && audio != reinterpret_cast<struct obs_audio_data*>(data) && audio->data[plane])
+        const float* filteredBuf = (audio && audio->data[plane])
                                        ? reinterpret_cast<const float*>(audio->data[plane])
                                        : normalBuf;
 
         if (isTransitioning) {
             float gain = currentGain;
-            for (size_t s = 0; s < data->frames; ++s) {
+            for (size_t s = 0; s < frames; ++s) {
                 gain = std::clamp(gain + signedStep, 0.0f, 1.0f);
                 float rawSample = processor->rawBackup[plane][s];
-                float filteredSample = filteredBuf[s];
+                float filteredSample = (s < filteredFrames) ? filteredBuf[s] : 0.0f;
                 float mixedSample = rawSample * (1.0f - gain) + filteredSample * gain;
                 normalBuf[s] = mixedSample;
                 unclampedBuf[s] = mixedSample;
@@ -349,9 +379,16 @@ void AudioProcessor::onAudioData(void* param, size_t mix_idx, struct audio_data*
         } else {
             // Steady state: fast memcpy directly
             if (filteredBuf != normalBuf) {
-                std::memcpy(normalBuf, filteredBuf, data->frames * sizeof(float));
+                if (filteredFrames > 0) {
+                    std::memcpy(normalBuf, filteredBuf, filteredFrames * sizeof(float));
+                }
+                if (filteredFrames < frames) {
+                    std::memset(normalBuf + filteredFrames, 0, (frames - filteredFrames) * sizeof(float));
+                }
+            } else if (filteredFrames < frames) {
+                std::memset(normalBuf + filteredFrames, 0, (frames - filteredFrames) * sizeof(float));
             }
-            std::memcpy(unclampedBuf, normalBuf, data->frames * sizeof(float));
+            std::memcpy(unclampedBuf, normalBuf, frames * sizeof(float));
         }
     }
 

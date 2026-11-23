@@ -6,7 +6,7 @@
 
 struct obs_audio_data *process_filter_audio_c(obs_source_t *filter, struct obs_audio_data *audio)
 {
-    if (filter && filter->info.filter_audio) {
+    if (filter && filter->context.data && filter->info.filter_audio) {
         return filter->info.filter_audio(filter->context.data, audio);
     }
     return audio;

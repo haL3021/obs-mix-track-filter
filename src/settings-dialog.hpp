@@ -7,7 +7,7 @@ class QCheckBox;
 class QLabel;
 class QDialogButtonBox;
 
-#define MIX_TRACK_FILTER_VERSION "0.4.3"
+#define MIX_TRACK_FILTER_VERSION "0.4.4"
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
